@@ -1,0 +1,10 @@
+import type { CellEnvironment, SimulationApi, SimulationConfig, SimulationSummary, TrajectoryState } from './types'
+
+const defaults: SimulationConfig = { monteCarloRuns: 100, attackerCount: 1, maxConcurrentAttacks: 1, gridSize: 100, targetDistanceMinKm: 10, targetDistanceMaxKm: 20, missileMaxSpeedMps: 100, interceptorMaxSpeedMps: 75, missileMaxRangeKm: 20, detectionRangeKm: 12, interceptionRadiusM: 3, simulationTimeLimitS: 200, randomSeed: 'PGRN-4821', weather: { spatialCorrelation: 0.72, layerCorrelation: 0.35, intensity: 0.18 }, guidance: { navigationConstant: 4.2, autopilotLagS: 0.6, dragCoefficient: 0.28, integrationStepS: 1 } }
+
+export class MockSimulationApi implements SimulationApi {
+  async getConfig() { return defaults }
+  async startSimulation() { return { id: 'MOCK-7F2A', status: 'complete' as const, outcome: 'INTERCEPTION SUCCESS', total: 100, completed: 100, successful: 82, failed: 18, meanInterceptionTimeS: 46.8, meanClosestApproachM: 2.4 } satisfies SimulationSummary }
+  async getTrajectory() { return Array.from({ length: 121 }, (_, timeS) => { const t = timeS / 120; const missileX = 8.8 - t * 8.1; const missileY = 3.6 + Math.sin(t * 5) * 0.28; const interceptorX = 1.2 + t * 7.2; const interceptorY = 1.1 + t * 2.5 + Math.sin(t * 8) * 0.18; return { timeS, missile: { xKm: missileX, yKm: missileY, layer: String(8124 - Math.floor(t * 430)), velocityMps: 94 + Math.sin(t * 7) * 3, headingDeg: 182 + Math.sin(t * 4) * 3, accelerationMps2: -0.8, status: timeS > 48 ? 'INTERCEPTED' : 'IN FLIGHT' }, interceptor: { xKm: interceptorX, yKm: interceptorY, layer: String(7990 - Math.floor(t * 430)), velocityMps: 72 + Math.sin(t * 5) * 2, headingDeg: 18 + Math.sin(t * 3) * 4, accelerationMps2: 1.4, status: timeS > 48 ? 'KILL CONFIRMED' : 'TRACKING' }, separationM: Math.max(2.1, 1180 - timeS * 24 + Math.sin(timeS / 3) * 40) } }) }
+  async getEnvironment(layer: string, x: number, y: number) { return { layer, x, y, temperatureK: 286.4, densityKgM3: 1.184, windSpeedMps: 14.2, windDirectionDeg: 247, windVector: { u: -5.6, v: -12.8, w: 0.4 }, grfIntensity: 0.18 } }
+}

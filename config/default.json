@@ -1,0 +1,49 @@
+{
+  "world": {
+    "na": 100,
+    "layer_limit": "10^100",
+    "cell_size_km": 1.0,
+    "hostility_tolerance": 0.5,
+    "hostile_y_only": true,
+    "target_range_km": [
+      10,
+      20
+    ],
+    "max_missile_range_km": 20.0,
+    "max_layer_separation": 3
+  },
+  "weather": {
+    "seed": 2026,
+    "features": 96,
+    "length_scale_km": 8.0,
+    "layer_length_scale": 2.0,
+    "temperature_base_c": 15.0,
+    "temperature_sigma_c": 8.0,
+    "density_base_kg_m3": 1.225,
+    "density_sigma": 0.15,
+    "wind_sigma_m_s": 12.0
+  },
+  "physics": {
+    "dt_s": 0.05,
+    "missile_max_speed_m_s": 100.0,
+    "missile_accel_m_s2": 30.0,
+    "missile_hold_s": 1.0,
+    "interceptor_max_speed_m_s": 75.0,
+    "interceptor_accel_m_s2": 40.0,
+    "interceptor_hold_s": 1.0,
+    "drag_coefficient": 0.3,
+    "area_m2": 0.03,
+    "mass_kg": 30.0,
+    "gravity_m_s2": 9.80665,
+    "interception_radius_m": 3.0,
+    "detection_range_km": 12.0
+  },
+  "simulation": {
+    "monte_carlo_runs": 20,
+    "max_simultaneous_attackers": 100,
+    "max_time_s": 250.0,
+    "simulation_speed": 1.0,
+    "paired_layer_every": 10,
+    "seed": 1234
+  }
+}
