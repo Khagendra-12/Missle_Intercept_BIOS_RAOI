@@ -1,51 +1,36 @@
+
 from __future__ import annotations
 
-from math import sqrt
+import math
 
 from .engagement import simulate_engagement
 
 
-MIN_RUNS = 1
-MAX_RUNS = 1_000_000
-
-
-def wilson_interval(
-    successes: int,
-    total: int,
-    z: float = 1.96,
-) -> tuple[float, float]:
-    """
-    Calculate a Wilson score confidence interval for a proportion.
-    Defaults to approximately 95% confidence.
-    """
+def wilson_interval(successes: int, total: int, z: float = 1.96):
+    """Calculate a 95% Wilson confidence interval."""
     if total <= 0:
-        return 0.0, 0.0
-
-    if successes < 0 or successes > total:
-        raise ValueError("Success count must be between 0 and total.")
+        return [0.0, 0.0]
 
     proportion = successes / total
-    z_squared = z * z
-
-    denominator = 1.0 + z_squared / total
+    denominator = 1.0 + z * z / total
 
     center = (
-        proportion + z_squared / (2.0 * total)
+        proportion + z * z / (2.0 * total)
     ) / denominator
 
     margin = (
         z
-        * sqrt(
+        * math.sqrt(
             proportion * (1.0 - proportion) / total
-            + z_squared / (4.0 * total * total)
+            + z * z / (4.0 * total * total)
         )
         / denominator
     )
 
-    return (
+    return [
         max(0.0, center - margin),
         min(1.0, center + margin),
-    )
+    ]
 
 
 def run_monte_carlo(
@@ -55,39 +40,49 @@ def run_monte_carlo(
     progress=None,
 ) -> dict:
     """
-    Execute Monte Carlo engagement trials.
+    Execute the configured number of engagements.
 
-    Each trial receives a deterministic run index.
-    Results are aggregated by outcome status.
+    The first engagement retains its complete trajectory for frontend
+    playback. Other runs retain their summary data to avoid storing
+    potentially enormous trajectory collections in memory.
     """
 
-    count = int(cfg["simulation"]["monte_carlo_runs"])
+    simulation_cfg = cfg["simulation"]
 
-    if not MIN_RUNS <= count <= MAX_RUNS:
+    count = int(simulation_cfg.get("monte_carlo_runs", 1))
+
+    if not 1 <= count <= 1_000_000:
         raise ValueError(
-            f"Monte Carlo runs must be between "
-            f"{MIN_RUNS} and {MAX_RUNS}."
+            "monte_carlo_runs must be between 1 and 1,000,000."
         )
 
     results = []
-    tally: dict[str, int] = {}
+    primary_result = None
+    tally = {}
 
     for run_index in range(count):
         result = simulate_engagement(
-            cfg,
-            world,
-            weather,
-            run_index,
+            cfg=cfg,
+            world=world,
+            weather=weather,
+            run_index=run_index,
+            layer=None,
         )
 
-        if not isinstance(result, dict) or "status" not in result:
-            raise RuntimeError(
-                f"Invalid result returned by run {run_index}."
-            )
+        if run_index == 0:
+            # Preserve the complete first trajectory for the dashboard.
+            primary_result = result
+            results.append(result)
+        else:
+            # Keep statistical results without duplicating large trajectories.
+            compact_result = {
+                key: value
+                for key, value in result.items()
+                if key != "trajectory"
+            }
+            results.append(compact_result)
 
-        results.append(result)
-
-        status = str(result["status"])
+        status = result.get("status", "unknown")
         tally[status] = tally.get(status, 0) + 1
 
         if progress is not None:
@@ -97,22 +92,22 @@ def run_monte_carlo(
     target_hits = tally.get("target_hit", 0)
 
     intercept_rate = intercepted / count
-    target_hit_rate = target_hits / count
+    success_interval = wilson_interval(intercepted, count)
 
-    ci_low, ci_high = wilson_interval(
-        intercepted,
-        count,
-    )
+    primary_result = primary_result or {}
 
     return {
         "runs": count,
         "summary": tally,
         "intercept_rate": intercept_rate,
-        "target_hit_rate": target_hit_rate,
-        "intercept_rate_confidence_interval_95": {
-            "lower": ci_low,
-            "upper": ci_high,
-        },
-        "confidence_interval_method": "Wilson score",
+        "target_hit_rate": target_hits / count,
+        "confidence_interval_95": success_interval,
+
+        # Convenient fields for the frontend.
+        "status": primary_result.get("status", "unknown"),
+        "trajectory": primary_result.get("trajectory", []),
+        "primary_result": primary_result,
+
+        # Per-run summaries; the first run contains its full trajectory.
         "results": results,
     }

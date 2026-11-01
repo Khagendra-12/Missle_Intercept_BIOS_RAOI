@@ -1,35 +1,31 @@
+
 /**
- * Wire-level contract for the `ewsim` FastAPI backend (version 0.1.0).
+ * Wire-level contract for the ewsim FastAPI backend.
  *
- * Every type in this file mirrors exactly what `ewsim/api.py` serialises.
- * Nothing here is used directly by visual components: `lib/adapters.ts`
- * converts these shapes into the frontend domain types in `lib/types.ts`.
- * When the backend changes, update this file and the adapters only.
+ * These types mirror the JSON exchanged with the backend.
+ * Visual components should use the domain types in lib/types.ts;
+ * lib/adapters.ts converts these wire-level shapes into domain types.
  */
 
-/** Mirrors `ewsim.world.MAX_LAYER = 10**100`. Kept as a string; never a JS number. */
+/** Layer bounds are strings because JavaScript numbers cannot represent 10^100 exactly. */
 export const LAYER_MIN = '0'
 export const LAYER_MAX = '1' + '0'.repeat(100)
 
 export const ENDPOINTS = {
   health: () => '/health',
-  /** Raw nested snake_case config loaded from `config/default.json`. */
   rawConfig: () => '/config/default',
-  /** camelCase projection of the raw config (`frontend_config`). */
   frontendConfig: () => '/api/config',
-  /** Deep-merges the posted dict onto the defaults and echoes it back. */
   validateConfig: () => '/api/config',
   createSimulation: () => '/simulations',
   simulation: (id: string) => `/simulations/${encodeURIComponent(id)}`,
-  /** Not implemented in ewsim 0.1.0 — the client treats 404/405 as "unsupported". */
-  stopSimulation: (id: string) => `/api/simulations/${encodeURIComponent(id)}/stop`,
-  trajectory: (id: string) => `/api/simulations/${encodeURIComponent(id)}/trajectory`,
-  /** Not scoped to a simulation id in ewsim 0.1.0; always uses default config weather. */
+  stopSimulation: (id: string) =>
+    `/api/simulations/${encodeURIComponent(id)}/stop`,
+  trajectory: (id: string) =>
+    `/api/simulations/${encodeURIComponent(id)}/trajectory`,
   environment: () => '/api/simulations/environment',
 } as const
 
 export type RawConfigSection = Record<string, unknown>
-/** `{ simulation, world, physics, weather, guidance, ... }` */
 export type RawConfig = Record<string, RawConfigSection>
 
 export interface RawHealth {
@@ -37,7 +33,7 @@ export interface RawHealth {
   version: string
 }
 
-/** `GET /api/config` */
+/** GET /api/config */
 export interface RawFrontendConfig {
   monteCarloRuns: number
   attackerCount: number
@@ -65,31 +61,35 @@ export interface RawFrontendConfig {
   }
 }
 
-/** `POST /api/config` response */
+/** POST /api/config response */
 export interface RawConfigValidation {
   status: 'validated'
   config: RawConfig
 }
 
-/** `ewsim.schemas.SimulationRequest` */
+/** ewsim.schemas.SimulationRequest */
 export interface RawSimulationRequest {
   config?: Partial<RawConfig> | null
-  /** 1 … 100000 */
+  /** Minimum 1 run. */
   runs?: number | null
-  /** 1 … 1000 */
+  /** Interceptor maximum speed in metres per second. */
   interceptor_speed_m_s?: number | null
   seed?: number | null
 }
 
-/** `POST /simulations` response */
+/** POST /simulations response */
 export interface RawJobCreated {
   job_id: string
-  status: 'queued'
+  status: 'queued' | 'running'
 }
 
-export type RawJobStatus = 'queued' | 'running' | 'completed' | 'failed'
+export type RawJobStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
 
-/** `GET /simulations/{job_id}` response */
+/** GET /simulations/{job_id} response */
 export interface RawJob {
   job_id: string
   status: RawJobStatus
@@ -97,11 +97,23 @@ export interface RawJob {
   error?: string
 }
 
-/** `ewsim.monte_carlo.run_monte_carlo` return value */
+export interface RawConfidenceInterval {
+  lower: number
+  upper: number
+}
+
+/** ewsim.monte_carlo.run_monte_carlo return value */
 export interface RawMonteCarloResult {
   runs: number
   summary: Record<string, number>
   intercept_rate: number
+  target_hit_rate?: number
+  confidence_interval_95?: RawConfidenceInterval
+  status?: string
+  /** Trajectory for the primary simulation run. */
+  trajectory?: RawTrajectoryState[]
+  primary_result?: RawEngagementResult
+  /** Compact results for the individual Monte Carlo runs. */
   results: RawEngagementResult[]
 }
 
@@ -112,10 +124,13 @@ export type RawEngagementStatus =
   | 'missile_out_of_bounds'
   | 'ground_impact'
   | 'target_hit'
+  | 'unknown'
 
-/** `ewsim.engagement.simulate_engagement` return value (fields vary per status). */
+/** Result from one individual engagement simulation. */
 export interface RawEngagementResult {
-  run: number
+  run_index?: number
+  /** Retained for compatibility with older backend responses. */
+  run?: number
   status: RawEngagementStatus | string
   reason?: string
   time_s?: number
@@ -123,13 +138,14 @@ export interface RawEngagementResult {
   distance_km?: number
   layer?: string
   target_layer?: string
-  /** Only present on the loop-exhaustion path in 0.1.0. */
   trajectory?: RawTrajectoryState[]
 }
 
 export interface RawProjectileState {
   xKm: number
   yKm: number
+  /** Vertical coordinate in kilometres. */
+  zKm?: number
   layer: string
   velocityMps: number
   headingDeg: number
@@ -137,33 +153,37 @@ export interface RawProjectileState {
   status: string
 }
 
-/** One recorded integrator step (every `physics.dt_s`). */
+/** A recorded missile/interceptor state. */
 export interface RawTrajectoryState {
+  /** Simulation time in seconds. */
   timeS: number
   missile: RawProjectileState
   interceptor: RawProjectileState
   separationM: number
 }
 
-/** `GET /api/simulations/environment` response */
+/** GET /api/simulations/environment response */
 export interface RawCellEnvironment {
   layer: string
   x: number
   y: number
-  /** Always null in 0.1.0 (weather emits `temperature_c`). */
   temperatureK: number | null
   densityKgM3: number | null
-  /** Always null in 0.1.0. */
   windSpeedMps: number | null
-  /** Always null in 0.1.0. */
   windDirectionDeg: number | null
-  /** `[u, v, w]` array in 0.1.0; an object is also accepted. */
-  windVector: [number, number, number] | { u: number; v: number; w: number } | null
+  windVector:
+    | [number, number, number]
+    | { u: number; v: number; w: number }
+    | null
   grfIntensity: number | null
   [extra: string]: unknown
 }
 
 /** FastAPI error envelope */
 export interface RawErrorBody {
-  detail?: string | Array<{ loc?: unknown[]; msg?: string; type?: string }>
+  detail?: string | Array<{
+    loc?: unknown[]
+    msg?: string
+    type?: string
+  }>
 }

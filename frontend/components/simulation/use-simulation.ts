@@ -1,3 +1,4 @@
+
 'use client'
 
 import { useCallback, useMemo, useState } from 'react'
@@ -10,6 +11,7 @@ import { describeError } from '@/lib/transport'
 import type { ConfigValues, SimulationMode, SimulationSnapshot } from '@/lib/types'
 
 const TERMINAL = new Set(['completed', 'failed'])
+const MIN_MONTE_CARLO_RUNS = 1
 
 export function useSimulation() {
   const [mode, setMode] = useState<SimulationMode>(() => parseMode(process.env.NEXT_PUBLIC_SIMULATION_MODE))
@@ -20,11 +22,21 @@ export function useSimulation() {
     refreshInterval: HEALTH_INTERVAL_MS,
     shouldRetryOnError: false,
   })
-  const config = useSWR(['config', api], () => api.loadConfig(), { revalidateOnFocus: false })
+
+  const config = useSWR(['config', api], () => api.loadConfig(), {
+    revalidateOnFocus: false,
+  })
 
   const [edits, setEdits] = useState<ConfigValues>({})
-  const values = useMemo<ConfigValues>(() => ({ ...(config.data?.defaults ?? {}), ...edits }), [config.data, edits])
-  const errors = useMemo(() => validateAll(values, config.data?.supported ?? []), [values, config.data])
+  const values = useMemo<ConfigValues>(
+    () => ({ ...(config.data?.defaults ?? {}), ...edits }),
+    [config.data, edits],
+  )
+
+  const errors = useMemo(
+    () => validateAll(values, config.data?.supported ?? []),
+    [values, config.data],
+  )
 
   const [jobId, setJobId] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState<ConfigValues | null>(null)
@@ -35,8 +47,14 @@ export function useSimulation() {
 
   const ctx = useMemo(
     () => ({
-      interceptionRadiusM: submitted?.interceptionRadiusM !== undefined ? Number(submitted.interceptionRadiusM) : null,
-      timeLimitS: submitted?.simulationTimeLimitS !== undefined ? Number(submitted.simulationTimeLimitS) : null,
+      interceptionRadiusM:
+        submitted?.interceptionRadiusM !== undefined
+          ? Number(submitted.interceptionRadiusM)
+          : null,
+      timeLimitS:
+        submitted?.simulationTimeLimitS !== undefined
+          ? Number(submitted.simulationTimeLimitS)
+          : null,
     }),
     [submitted],
   )
@@ -45,65 +63,125 @@ export function useSimulation() {
     jobId && !stopped ? ['job', api, jobId] : null,
     () => api.getSimulation(jobId!, ctx),
     {
-      refreshInterval: (latest) => (latest && TERMINAL.has(latest.snapshot.status) ? 0 : POLL_INTERVAL_MS),
+      refreshInterval: (latest) =>
+        latest && TERMINAL.has(latest.snapshot.status)
+          ? 0
+          : POLL_INTERVAL_MS,
       revalidateOnFocus: false,
       keepPreviousData: true,
     },
   )
 
   const [selectedRun, setSelectedRun] = useState<number | null>(null)
+
   const snapshot = job.data?.snapshot ?? null
-  const status = stopped ? 'stopped' : snapshot?.status ?? (jobId ? 'queued' : null)
-  const effectiveRun = selectedRun ?? snapshot?.engagements.find((e) => e.hasTrajectory && e.outcome === 'INTERCEPTION_SUCCESS')?.run ?? snapshot?.engagements.find((e) => e.hasTrajectory)?.run ?? null
+  const status = stopped
+    ? 'stopped'
+    : snapshot?.status ?? (jobId ? 'queued' : null)
+
+  const effectiveRun =
+    selectedRun ??
+    snapshot?.engagements.find(
+      (engagement) =>
+        engagement.hasTrajectory &&
+        engagement.outcome === 'INTERCEPTION_SUCCESS',
+    )?.run ??
+    snapshot?.engagements.find(
+      (engagement) => engagement.hasTrajectory,
+    )?.run ??
+    null
 
   const trajectory = useSWR(
-    jobId && status === 'completed' && effectiveRun !== null ? ['traj', api, jobId, effectiveRun] : null,
+    jobId && status === 'completed' && effectiveRun !== null
+      ? ['traj', api, jobId, effectiveRun]
+      : null,
     () => api.getTrajectory(jobId!, effectiveRun!, job.data?.raw ?? null),
     { revalidateOnFocus: false },
   )
 
-  const setValue = useCallback((id: string, value: number | string) => setEdits((e) => ({ ...e, [id]: value })), [])
+  const setValue = useCallback(
+    (id: string, value: number | string) => {
+      setEdits((current) => ({ ...current, [id]: value }))
+    },
+    [],
+  )
+
   const resetValues = useCallback(() => setEdits({}), [])
 
   const start = useCallback(async () => {
-    if (!config.data || Object.keys(errors).length) return
+    if (starting || !config.data || Object.keys(errors).length > 0) {
+      return
+    }
+
     setStarting(true)
     setStartError(null)
     setStopNote(null)
+
+    // Clear the previous run before starting a new one.
+    setJobId(null)
+    setSubmitted(null)
+    setSelectedRun(null)
+    setStopped(false)
+
     try {
       const request = api.buildRequest(values, config.data)
-      if (request.config) await api.validateConfig(request)
+
+      // The minimum valid Monte Carlo run count is one.
+      request.runs = Math.max(
+        MIN_MONTE_CARLO_RUNS,
+        Math.floor(Number(request.runs ?? values.monteCarloRuns ?? 1)),
+      )
+
+      if (request.config) {
+        await api.validateConfig(request)
+      }
+
       const id = await api.startSimulation(request)
-      setSubmitted(values)
-      setSelectedRun(null)
-      setStopped(false)
+
+      setSubmitted({
+        ...values,
+        monteCarloRuns: request.runs,
+      })
       setJobId(id)
     } catch (err) {
       setStartError(describeError(err))
     } finally {
       setStarting(false)
     }
-  }, [api, config.data, errors, values])
+  }, [api, config.data, errors, starting, values])
 
   const stop = useCallback(async () => {
     if (!jobId) return
+
     setStopped(true)
+
     try {
       const supported = await api.stopSimulation(jobId)
-      setStopNote(supported ? 'Backend stopped the job.' : 'Backend has no stop route; polling halted locally, the job may keep running server-side.')
+
+      setStopNote(
+        supported
+          ? 'Backend stopped the job.'
+          : 'Backend has no stop route; polling halted locally, the job may keep running server-side.',
+      )
     } catch (err) {
       setStopNote(describeError(err))
     }
   }, [api, jobId])
 
-  const changeConnection = useCallback((nextMode: SimulationMode, nextUrl: string) => {
-    setMode(nextMode)
-    setBaseUrl(normalizeBaseUrl(nextUrl))
-    setJobId(null)
-    setSubmitted(null)
-    setEdits({})
-    setSelectedRun(null)
-  }, [])
+  const changeConnection = useCallback(
+    (nextMode: SimulationMode, nextUrl: string) => {
+      setMode(nextMode)
+      setBaseUrl(normalizeBaseUrl(nextUrl))
+      setJobId(null)
+      setSubmitted(null)
+      setEdits({})
+      setSelectedRun(null)
+      setStopped(false)
+      setStartError(null)
+      setStopNote(null)
+    },
+    [],
+  )
 
   return {
     api,
@@ -129,10 +207,16 @@ export function useSimulation() {
     setSelectedRun,
     trajectory: trajectory.data ?? null,
     trajectoryLoading: trajectory.isLoading,
-    trajectoryError: trajectory.error ? describeError(trajectory.error) : null,
+    trajectoryError: trajectory.error
+      ? describeError(trajectory.error)
+      : null,
     gridSize: Number(submitted?.gridSize ?? values.gridSize ?? 100),
-    interceptionRadiusM: Number(submitted?.interceptionRadiusM ?? values.interceptionRadiusM ?? 3),
-    detectionRangeKm: Number(submitted?.detectionRangeKm ?? values.detectionRangeKm ?? 12),
+    interceptionRadiusM: Number(
+      submitted?.interceptionRadiusM ?? values.interceptionRadiusM ?? 3,
+    ),
+    detectionRangeKm: Number(
+      submitted?.detectionRangeKm ?? values.detectionRangeKm ?? 12,
+    ),
   }
 }
 
