@@ -1,96 +1,129 @@
+import { type AdapterContext, adaptEnvironment, adaptJob, adaptTrajectory } from './adapters'
+import {
+  ENDPOINTS,
+  type RawCellEnvironment,
+  type RawConfig,
+  type RawConfigValidation,
+  type RawFrontendConfig,
+  type RawHealth,
+  type RawJob,
+  type RawJobCreated,
+  type RawSimulationRequest,
+  type RawTrajectoryState,
+} from './backend-contract'
+import { buildOverride, extractValues, rawFromApiConfig } from './config-schema'
+import { MockTransport } from './mock-api'
+import { BackendError, HttpTransport, type Transport } from './transport'
+import type { CellEnvironment, ConfigBundle, ConfigValues, HealthStatus, SimulationMode, SimulationSnapshot, Trajectory } from './types'
 
-import type {
-  CellEnvironment,
-  SimulationConfig,
-  SimulationSummary,
-  TrajectoryState,
-} from "./types";
+/**
+ * Single entry point the UI uses to talk to the ewsim backend. Mock and real
+ * modes share every code path below; only the transport differs.
+ */
+export class SimulationApi {
+  readonly transport: Transport
 
-import { MockSimulationApi } from "./mock-api";
-
-export interface SimulationApi {
-  getConfig(): Promise<SimulationConfig>;
-  startSimulation(config: SimulationConfig): Promise<SimulationSummary>;
-  getSimulationStatus(id: string): Promise<any>;
-  getTrajectory(id: string): Promise<TrajectoryState[]>;
-  getEnvironment(
-    layer: string,
-    x: number,
-    y: number
-  ): Promise<CellEnvironment>;
-}
-
-export class RealSimulationApi implements SimulationApi {
-  private base =
-    process.env.NEXT_PUBLIC_SIMULATION_API_URL ||
-    "http://localhost:8000";
-
-  private async request<T>(
-    path: string,
-    init?: RequestInit
-  ): Promise<T> {
-    const response = await fetch(`${this.base}${path}`, init);
-
-    if (!response.ok) {
-      throw new Error(
-        `Backend error ${response.status}: ${await response.text()}`
-      );
-    }
-
-    return response.json();
+  constructor(
+    readonly mode: SimulationMode,
+    readonly baseUrl: string,
+  ) {
+    this.transport = mode === 'mock' ? new MockTransport() : new HttpTransport(baseUrl)
   }
 
-  async getConfig(): Promise<SimulationConfig> {
-    return this.request<SimulationConfig>("/config/default");
+  async health(): Promise<HealthStatus> {
+    const start = performance.now()
+    const res = await this.transport.request<RawHealth>('GET', ENDPOINTS.health(), { retries: 0 })
+    return { ok: res.status === 'ok', version: res.version ?? null, latencyMs: Math.round(performance.now() - start) }
   }
 
-  async startSimulation(config: SimulationConfig): Promise<SimulationSummary> {
-    const response = await this.request<any>("/simulations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        config: config,
-        runs: config.monteCarloRuns,
-        interceptor_speed_m_s: config.interceptorMaxSpeedMps,
-        seed: Number(config.randomSeed) || undefined,
-      }),
-    });
-
+  async loadConfig(): Promise<ConfigBundle> {
+    const [raw, api] = await Promise.allSettled([
+      this.transport.request<RawConfig>('GET', ENDPOINTS.rawConfig()),
+      this.transport.request<RawFrontendConfig>('GET', ENDPOINTS.frontendConfig()),
+    ])
+    const rawCfg = raw.status === 'fulfilled' ? raw.value : null
+    const apiCfg = api.status === 'fulfilled' ? (api.value as unknown as Record<string, unknown>) : null
+    if (!rawCfg && !apiCfg) throw raw.status === 'rejected' ? raw.reason : new Error('Config unavailable')
+    const { values, supported } = extractValues(rawCfg, apiCfg)
     return {
-      id: response.job_id,
-      status: response.status,
-      outcome: "RUNNING",
-      total: config.monteCarloRuns,
-      completed: 0,
-      successful: 0,
-      failed: 0,
-      meanInterceptionTimeS: 0,
-      meanClosestApproachM: 0,
-    };
+      raw: rawCfg ?? rawFromApiConfig(apiCfg!),
+      defaults: values,
+      supported,
+      source: rawCfg && apiCfg ? 'merged' : rawCfg ? '/config/default' : '/api/config',
+    }
   }
 
-  getSimulationStatus(id: string): Promise<any> {
-    return this.request<any>(`/simulations/${id}`);
+  buildRequest(values: ConfigValues, bundle: ConfigBundle): RawSimulationRequest {
+    const override = buildOverride(values, bundle.defaults, bundle.supported)
+    const req: RawSimulationRequest = { config: Object.keys(override).length ? override : null }
+    if (values.monteCarloRuns !== undefined) req.runs = Number(values.monteCarloRuns)
+    if (values.interceptorMaxSpeedMps !== undefined) req.interceptor_speed_m_s = Number(values.interceptorMaxSpeedMps)
+    if (values.randomSeed !== undefined && values.randomSeed !== '') req.seed = Number(values.randomSeed)
+    return req
   }
 
-  async getTrajectory(_id: string): Promise<TrajectoryState[]> {
-    throw new Error(
-      "Trajectory endpoint is not implemented in the Python backend yet."
-    );
+  async validateConfig(request: RawSimulationRequest): Promise<RawConfig> {
+    const res = await this.transport.request<RawConfigValidation>('POST', ENDPOINTS.validateConfig(), { body: request.config ?? {} })
+    return res.config
   }
 
-  async getEnvironment(
-    _layer: string,
-    _x: number,
-    _y: number
-  ): Promise<CellEnvironment> {
-    throw new Error(
-      "Environment endpoint is not implemented in the Python backend yet."
-    );
+  async startSimulation(request: RawSimulationRequest): Promise<string> {
+    const res = await this.transport.request<RawJobCreated>('POST', ENDPOINTS.createSimulation(), { body: request })
+    return res.job_id
+  }
+
+  async getSimulation(id: string, ctx: AdapterContext, signal?: AbortSignal): Promise<{ raw: RawJob; snapshot: SimulationSnapshot }> {
+    const raw = await this.transport.request<RawJob>('GET', ENDPOINTS.simulation(id), { signal })
+    return { raw, snapshot: adaptJob(raw, ctx) }
+  }
+
+  /** Returns false when the backend has no stop route (ewsim 0.1.0). */
+  async stopSimulation(id: string): Promise<boolean> {
+    try {
+      await this.transport.request('POST', ENDPOINTS.stopSimulation(id))
+      return true
+    } catch (err) {
+      if (err instanceof BackendError && (err.status === 404 || err.status === 405)) return false
+      throw err
+    }
+  }
+
+  /** Tries the trajectory route, then falls back to the trajectory embedded in the run result. */
+  async getTrajectory(id: string, run: number, rawJob: RawJob | null): Promise<Trajectory | null> {
+    const embedded = rawJob?.result?.results?.find((r) => r.run === run)
+    try {
+      const res = await this.transport.request<unknown>('GET', ENDPOINTS.trajectory(id), { retries: 0 })
+      const states = pickStates(res, run)
+      if (states?.length) return { simulationId: id, run, states: adaptTrajectory(states), outcome: null, source: 'endpoint' }
+    } catch (err) {
+      if (!(err instanceof BackendError)) throw err
+    }
+    if (embedded?.trajectory?.length) {
+      return { simulationId: id, run, states: adaptTrajectory(embedded.trajectory), outcome: null, source: 'embedded-result' }
+    }
+    return null
+  }
+
+  async getEnvironment(layer: string, x: number, y: number, signal?: AbortSignal): Promise<CellEnvironment> {
+    const raw = await this.transport.request<RawCellEnvironment>('GET', ENDPOINTS.environment(), {
+      query: { layer, x: Math.floor(x), y: Math.floor(y) },
+      signal,
+      retries: 0,
+    })
+    return adaptEnvironment(raw)
   }
 }
 
-export const simulationApi: SimulationApi =
-  process.env.NEXT_PUBLIC_SIMULATION_MODE === "real"
-    ? new RealSimulationApi()
-    : new MockSimulationApi();
+function pickStates(res: unknown, run: number): RawTrajectoryState[] | null {
+  if (Array.isArray(res)) {
+    if (res.length && Array.isArray(res[0])) return (res[run] as RawTrajectoryState[]) ?? null
+    return res as RawTrajectoryState[]
+  }
+  if (res && typeof res === 'object') {
+    const obj = res as Record<string, unknown>
+    const byRun = obj[String(run)]
+    if (Array.isArray(byRun)) return byRun as RawTrajectoryState[]
+    if (Array.isArray(obj.states)) return obj.states as RawTrajectoryState[]
+  }
+  return null
+}
