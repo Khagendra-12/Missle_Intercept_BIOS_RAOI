@@ -1,38 +1,113 @@
-# Procedural EW Layered-Civilization Simulator (Backend)
+# Procedural EW Layered-Civilization Simulator — Backend
 
-A deterministic, procedural backend for Monte Carlo engagements in an effectively unbounded layered world. **The layer count is never enumerated and `10**100` is never converted to a machine integer or float.** Layers are addressed by arbitrary-precision Python integers and generated on demand from keyed hashes.
+A Python backend for procedural layered-world generation, environmental sampling, missile/interceptor engagement experiments, and Monte Carlo analysis.
+
+**Important:** This is an experimental implementation, not a validated flight-dynamics or operational defense model. Results should not be presented as scientifically validated until the outstanding modeling requirements have been implemented and tested.
 
 ## Requirements
-- Python 3.11+
-- `pip install -r requirements.txt`
 
-## Run
+- Python 3.11+
+- Dependencies listed in `requirements.txt`
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Run the API
+
+From the project root:
+
 ```bash
 python run.py --config config/default.json
 ```
-OpenAPI docs are available at `http://127.0.0.1:8000/docs`.
 
-## Architecture
-- `ewsim/world.py`: lazy civilization / hostility generation, layer-index handling.
-- `ewsim/weather.py`: deterministic 3D Gaussian random field approximation (correlated procedural field) sampled lazily.
-- `ewsim/physics.py`: gravity, drag, kinematics, launch acceleration/cruise phases.
-- `ewsim/guidance.py`: APN guidance and engagement feasibility; **no missile interception-avoidance logic**.
-- `ewsim/engagement.py`: discrete-time engagement simulation and event handling.
-- `ewsim/monte_carlo.py`: sequential Monte Carlo runner, paired-layer repeats every tenth run.
-- `ewsim/api.py`: FastAPI backend suitable for frontend integration.
-- `ewsim/schemas.py`: request/response contracts.
+The API documentation is available at:
 
-## Important modeling note
-The world is *effectively* huge, not explicitly populated. `MAX_LAYER = 10**100` is a Python integer constant used only for bounds and labels. It is not iterated over, allocated, or converted to floating point. Coordinates used by the physics engine are local relative coordinates (km); layer indices are symbolic/discrete and only their signed difference is converted to a local vertical distance when the engagement is physically within the configured layer-distance limit. This prevents loss of precision for huge layer indices.
+```text
+http://127.0.0.1:8000/docs
+```
 
-The GRF implementation uses a deterministic spectral-feature approximation to a stationary Gaussian field. It produces correlated samples without constructing a world-sized tensor. `weather.sample(x,y,layer)` is O(number of features), independent of total world size.
+## Backend structure
 
-## Frontend integration
-- `POST /simulations` accepts a config and returns a job ID.
-- `GET /simulations/{job_id}` returns status/result.
-- `POST /simulations/run` runs synchronously for simpler demos.
-- `GET /health` reports service status.
-- `GET /config/default` returns default config.
-- Use JSON contracts in `ewsim/schemas.py`.
+| File | Responsibility |
+|---|---|
+| `ewsim/api.py` | FastAPI endpoints and simulation job handling |
+| `ewsim/config.py` | Configuration loading and validation |
+| `ewsim/schemas.py` | Request and response validation |
+| `ewsim/world.py` | Procedural civilization cells and layer handling |
+| `ewsim/weather.py` | Lazy procedural environmental field |
+| `ewsim/physics.py` | Physics utilities and numerical integration |
+| `ewsim/guidance.py` | Augmented proportional navigation guidance |
+| `ewsim/engagement.py` | Individual engagement simulation |
+| `ewsim/monte_carlo.py` | Monte Carlo execution and statistical summaries |
+| `ewsim/rng.py` | Deterministic random-number generation |
 
-For a production frontend, run the API and call it from the UI. CORS is enabled for localhost development; configure allowed origins in deployment.
+## API endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/health` | Health check |
+| GET | `/config/default` | Retrieve default configuration |
+| POST | `/simulations` | Submit a simulation job |
+| GET | `/simulations/{job_id}` | Retrieve job status and result |
+| POST | `/simulations/run` | Run a simulation synchronously |
+| GET | `/api/config` | Retrieve frontend configuration |
+| POST | `/api/config` | Validate submitted configuration |
+| GET | `/api/trajectory/{job_id}` | Retrieve trajectory data when available |
+| GET | `/api/environment` | Retrieve environmental samples |
+
+Check `/docs` for the actual request and response schemas.
+
+## Configuration
+
+Default settings are stored in:
+
+```text
+config/default.json
+```
+
+Simulation requests can override supported configuration values. Monte Carlo run counts must be between **1 and 1,000,000**, inclusive.
+
+## Procedural world and weather
+
+The world is generated lazily rather than allocating every civilization cell or layer.
+
+- Layer indices use Python arbitrary-precision integers.
+- The theoretical layer bound is `10**100`.
+- Civilization cells are represented in two dimensions.
+- Weather is sampled on demand using procedural random features.
+
+The implementation must not allocate arrays or iterate over the full theoretical layer range.
+
+## Current implementation limitations
+
+The following items must not be assumed to be fully implemented merely because related modules or configuration fields exist:
+
+- The exact revised hostility equation and its Taylor-series approximation.
+- Complete attacker/target civilization selection and distance constraints.
+- One-missile-per-attacker and configurable simultaneous attacker handling.
+- Missile evasion using the required APN/PPO combination.
+- Full RK4 integration throughout the engagement simulation.
+- Paired, layer-independent Monte Carlo trials.
+- Alternating configurations and the complete requested statistical reporting.
+- Production-grade trajectory telemetry and validated physical parameters.
+
+These are implementation requirements, not claims of completed functionality. Verify each against the actual backend before relying on simulation results.
+
+## Tests
+
+Run the complete test suite from the project root:
+
+```bash
+python -m pytest -q
+```
+
+Run an individual test file:
+
+```bash
+python -m pytest tests/test_world.py -q
+```
+
+A passing test suite only verifies the behavior covered by those tests. It does not establish scientific validity or prove that every simulation requirement is implemented.

@@ -1,4 +1,9 @@
+# Core backend dependencies
 numpy>=1.26
 fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.6
+
+# Testing dependencies
+httpx>=0.27
+pytest>=8.0

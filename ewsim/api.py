@@ -1,77 +1,168 @@
 from __future__ import annotations
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
+
+from math import atan2, degrees, sqrt
 from uuid import uuid4
-from .config import load_config,merge_config
+
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+from .config import load_config, merge_config
 from .schemas import SimulationRequest
 from .world import ProceduralWorld
 from .weather import ProceduralGRF
 from .monte_carlo import run_monte_carlo
 
-app=FastAPI(title="Procedural EW Simulator",version="0.1.0",
-             description="Lazy procedural layered-world Monte Carlo backend.")
-app.add_middleware(CORSMiddleware,allow_origins=["http://localhost:3000","http://127.0.0.1:3000"],
-                   allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
-JOBS={}
 
-def prepare(req:SimulationRequest):
-    cfg=merge_config(load_config(),req.config)
-    if req.runs is not None:cfg["simulation"]["monte_carlo_runs"]=req.runs
-    if req.seed is not None:cfg["simulation"]["seed"]=req.seed
-    if req.interceptor_speed_m_s is not None:cfg["physics"]["interceptor_max_speed_m_s"]=req.interceptor_speed_m_s
+app = FastAPI(
+    title="Procedural EW Simulator",
+    version="0.2.0",
+    description="Lazy procedural layered-world Monte Carlo backend.",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+JOBS: dict[str, dict] = {}
+
+
+def prepare(req: SimulationRequest) -> dict:
+    """Build the effective configuration for a simulation request."""
+    cfg = merge_config(load_config(), req.config)
+
+    if req.runs is not None:
+        cfg["simulation"]["monte_carlo_runs"] = req.runs
+
+    if req.seed is not None:
+        cfg["simulation"]["seed"] = req.seed
+
+    if req.interceptor_speed_m_s is not None:
+        cfg["physics"]["interceptor_max_speed_m_s"] = (
+            req.interceptor_speed_m_s
+        )
+
     return cfg
 
-def run_job(job_id,cfg):
+
+def run_job(job_id: str, cfg: dict) -> None:
+    """Execute a simulation and store its result or failure."""
+    JOBS[job_id] = {
+        "status": "running",
+        "result": None,
+        "error": None,
+    }
+
     try:
-        world=ProceduralWorld(cfg); weather=ProceduralGRF(cfg)
-        JOBS[job_id]={"status":"running","result":None}
-        result=run_monte_carlo(cfg,world,weather)
-        JOBS[job_id]={"status":"completed","result":result}
-    except Exception as e:
-        JOBS[job_id]={"status":"failed","error":str(e)}
+        world = ProceduralWorld(cfg)
+        weather = ProceduralGRF(cfg)
+
+        result = run_monte_carlo(cfg, world, weather)
+
+        JOBS[job_id] = {
+            "status": "completed",
+            "result": result,
+            "error": None,
+        }
+
+    except Exception as exc:
+        JOBS[job_id] = {
+            "status": "failed",
+            "result": None,
+            "error": str(exc),
+        }
+
 
 @app.get("/health")
-def health():return {"status":"ok","version":"0.1.0"}
+def health():
+    return {
+        "status": "ok",
+        "version": app.version,
+    }
+
 
 @app.get("/config/default")
-def default_config():return load_config()
+def default_config():
+    return load_config()
+
 
 @app.post("/simulations")
-def create_simulation(req:SimulationRequest,background:BackgroundTasks):
-    cfg=prepare(req); jid=str(uuid4())
-    JOBS[jid]={"status":"queued","result":None}
-    background.add_task(run_job,jid,cfg)
-    return {"job_id":jid,"status":"queued"}
+def create_simulation(
+    req: SimulationRequest,
+    background: BackgroundTasks,
+):
+    try:
+        cfg = prepare(req)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    job_id = str(uuid4())
+
+    JOBS[job_id] = {
+        "status": "queued",
+        "result": None,
+        "error": None,
+    }
+
+    background.add_task(run_job, job_id, cfg)
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+    }
+
 
 @app.post("/simulations/run")
-def run_sync(req:SimulationRequest):
-    cfg=prepare(req); world=ProceduralWorld(cfg); weather=ProceduralGRF(cfg)
-    return run_monte_carlo(cfg,world,weather)
+def run_sync(req: SimulationRequest):
+    try:
+        cfg = prepare(req)
+        world = ProceduralWorld(cfg)
+        weather = ProceduralGRF(cfg)
+
+        return run_monte_carlo(cfg, world, weather)
+
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.get("/simulations/{job_id}")
-def get_simulation(job_id:str):
-    if job_id not in JOBS:raise HTTPException(404,"Unknown job_id")
-    return {"job_id":job_id,**JOBS[job_id]}
+def get_simulation(job_id: str):
+    if job_id not in JOBS:
+        raise HTTPException(
+            status_code=404,
+            detail="Unknown job_id",
+        )
+
+    return {
+        "job_id": job_id,
+        **JOBS[job_id],
+    }
 
 
 @app.get("/api/config")
 def frontend_config():
     cfg = load_config()
 
+    target_range = cfg["world"].get("target_range_km", [10, 20])
+
     return {
         "monteCarloRuns": cfg["simulation"]["monte_carlo_runs"],
         "attackerCount": cfg["simulation"].get("attacker_count", 1),
-        "maxConcurrentAttacks": cfg["simulation"].get(
-            "max_concurrent_attacks", 1
-        ),
+        "maxConcurrentAttacks": cfg["simulation"][
+            "max_simultaneous_attackers"
+        ],
         "gridSize": cfg["world"]["na"],
-        "targetDistanceMinKm": cfg["world"].get(
-            "target_distance_min_km", 10
-        ),
-        "targetDistanceMaxKm": cfg["world"].get(
-            "target_distance_max_km", 20
-        ),
+        "targetDistanceMinKm": target_range[0],
+        "targetDistanceMaxKm": target_range[1],
         "missileMaxSpeedMps": cfg["physics"]["missile_max_speed_m_s"],
         "interceptorMaxSpeedMps": cfg["physics"][
             "interceptor_max_speed_m_s"
@@ -82,13 +173,10 @@ def frontend_config():
         "simulationTimeLimitS": cfg["simulation"]["max_time_s"],
         "randomSeed": str(cfg["simulation"]["seed"]),
         "weather": {
-            "spatialCorrelation": cfg["weather"]["spatial_correlation"],
-            "layerCorrelation": cfg["weather"]["layer_correlation"],
-            "intensity": cfg["weather"]["intensity"],
+            "spatialCorrelation": cfg["weather"]["length_scale_km"],
+            "layerCorrelation": cfg["weather"]["layer_length_scale"],
         },
         "guidance": {
-            "navigationConstant": cfg["guidance"]["navigation_constant"],
-            "autopilotLagS": cfg["guidance"]["autopilot_lag_s"],
             "dragCoefficient": cfg["physics"]["drag_coefficient"],
             "integrationStepS": cfg["physics"]["dt_s"],
         },
@@ -99,32 +187,55 @@ def frontend_config():
 def update_frontend_config(config: dict):
     try:
         updated = merge_config(load_config(), config)
-        return {"status": "validated", "config": updated}
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
 
+        return {
+            "status": "validated",
+            "config": updated,
+        }
+
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
 
 
 @app.get("/api/simulations/{job_id}/trajectory")
 def get_trajectory(job_id: str):
     if job_id not in JOBS:
-        raise HTTPException(status_code=404, detail="Unknown simulation ID")
+        raise HTTPException(
+            status_code=404,
+            detail="Unknown simulation ID",
+        )
 
-    result = JOBS[job_id].get("result")
+    job = JOBS[job_id]
+
+    if job["status"] in ("queued", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail="Simulation is still running",
+        )
+
+    if job["status"] == "failed":
+        raise HTTPException(
+            status_code=500,
+            detail=job.get("error") or "Simulation failed",
+        )
+
+    result = job.get("result")
 
     if result is None:
         raise HTTPException(
-            status_code=409,
-            detail="Simulation is still running"
+            status_code=404,
+            detail="Simulation result not found",
         )
 
-    # Adapt this to the actual structure returned by run_monte_carlo().
     trajectory = result.get("trajectory")
 
     if trajectory is None:
         raise HTTPException(
             status_code=501,
-            detail="Trajectory recording is not yet supported"
+            detail="Trajectory recording is not yet supported",
         )
 
     return trajectory
@@ -141,24 +252,41 @@ def get_cell_environment(
     world = ProceduralWorld(cfg)
     weather = ProceduralGRF(cfg)
 
-    layer_index = int(layer)
+    try:
+        layer_index = world.validate_layer(int(layer))
+        center_x, center_y = world.cell_center_xy(x, y)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
 
-    # Query only the requested cell. Never generate the entire world.
+    # Generate only the requested cell's weather.
     env = weather.sample(
-        float(x),
-        float(y),
+        center_x,
+        center_y,
         layer_index,
     )
+
+    temperature_c = env["temperature_c"]
+    wind = env["wind_m_s"]
+
+    wind_speed = sqrt(sum(component ** 2 for component in wind))
+
+    # Direction is measured clockwise from north.
+    wind_direction = (
+        degrees(atan2(wind[0], wind[1])) + 360.0
+    ) % 360.0
 
     return {
         "layer": str(layer_index),
         "x": x,
         "y": y,
-        "temperatureK": env.get("temperature_k"),
-        "densityKgM3": env.get("density_kg_m3"),
-        "windSpeedMps": env.get("wind_speed_m_s"),
-        "windDirectionDeg": env.get("wind_direction_deg"),
-        "windVector": env.get("wind_m_s"),
-        "grfIntensity": env.get("grf"),
+        "temperatureC": temperature_c,
+        "temperatureK": temperature_c + 273.15,
+        "densityKgM3": env["density_kg_m3"],
+        "windSpeedMps": wind_speed,
+        "windDirectionDeg": wind_direction,
+        "windVector": wind,
+        "grfIntensity": env["grf"],
     }
-

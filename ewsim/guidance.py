@@ -1,24 +1,138 @@
 from __future__ import annotations
+
 import numpy as np
+
 from .physics import unit, norm
 
-def apn_acceleration(position, velocity, target_position, target_velocity,
-                      navigation_constant=4.0, accel_limit=20*9.80665):
-    """Augmented proportional navigation command, translational 3-DOF."""
-    r=np.asarray(target_position)-np.asarray(position)
-    vrel=np.asarray(target_velocity)-np.asarray(velocity)
-    rr=norm(r)
-    if rr<1e-6:return np.zeros(3)
-    los=unit(r)
-    closing=-float(np.dot(vrel,los))
-    omega=np.cross(r,vrel)/(rr*rr)
-    a=np.asarray(navigation_constant*closing*np.cross(omega,los))
-    n=norm(a)
-    if n>accel_limit:a=a*(accel_limit/n)
-    return a
 
-def engagement_feasible(distance_m, relative_speed_m_s, accel_m_s2, radius_m=3.0):
-    distance=max(0.0,float(distance_m)-float(radius_m))
-    speed=max(1e-3,float(relative_speed_m_s))
-    return distance/speed <= max(0.0,2.0*speed/max(1e-3,accel_m_s2)
-                                  + distance/speed)
+def _limit_acceleration(
+    acceleration: np.ndarray,
+    accel_limit: float,
+) -> np.ndarray:
+    """Limit acceleration magnitude while preserving its direction."""
+    magnitude = norm(acceleration)
+
+    if magnitude > accel_limit and magnitude > 0.0:
+        return acceleration * (accel_limit / magnitude)
+
+    return acceleration
+
+
+def apn_acceleration(
+    position,
+    velocity,
+    target_position,
+    target_velocity,
+    navigation_constant: float = 4.0,
+    accel_limit: float = 20.0 * 9.80665,
+    target_acceleration=None,
+) -> np.ndarray:
+    """
+    Augmented proportional navigation (APN).
+
+    All positions are in metres.
+    All velocities are in metres per second.
+    All accelerations are in metres per second squared.
+
+    target_acceleration is optional and defaults to zero,
+    preserving compatibility with existing callers.
+    """
+
+    position = np.asarray(position, dtype=float)
+    velocity = np.asarray(velocity, dtype=float)
+
+    target_position = np.asarray(target_position, dtype=float)
+    target_velocity = np.asarray(target_velocity, dtype=float)
+
+    if any(
+        vector.shape != (3,)
+        for vector in (
+            position,
+            velocity,
+            target_position,
+            target_velocity,
+        )
+    ):
+        raise ValueError("APN inputs must be three-dimensional vectors.")
+
+    if not all(
+        np.all(np.isfinite(vector))
+        for vector in (
+            position,
+            velocity,
+            target_position,
+            target_velocity,
+        )
+    ):
+        raise ValueError("APN inputs must contain finite values.")
+
+    navigation_constant = float(navigation_constant)
+    accel_limit = float(accel_limit)
+
+    if navigation_constant <= 0.0:
+        raise ValueError("Navigation constant must be positive.")
+
+    if accel_limit < 0.0:
+        raise ValueError("Acceleration limit cannot be negative.")
+
+    if target_acceleration is None:
+        target_acceleration = np.zeros(3, dtype=float)
+    else:
+        target_acceleration = np.asarray(
+            target_acceleration,
+            dtype=float,
+        )
+
+        if target_acceleration.shape != (3,):
+            raise ValueError(
+                "Target acceleration must be a three-dimensional vector."
+            )
+
+        if not np.all(np.isfinite(target_acceleration)):
+            raise ValueError(
+                "Target acceleration must contain finite values."
+            )
+
+    # Relative position and velocity.
+    r = target_position - position
+    v_rel = target_velocity - velocity
+
+    distance = norm(r)
+
+    if distance < 1e-9 or accel_limit == 0.0:
+        return np.zeros(3, dtype=float)
+
+    los = unit(r)
+
+    # Positive closing speed means the range is decreasing.
+    closing_speed = -float(np.dot(v_rel, los))
+
+    if closing_speed <= 0.0:
+        return np.zeros(3, dtype=float)
+
+    # Line-of-sight angular velocity.
+    los_rate = np.cross(r, v_rel) / (distance * distance)
+
+    # Conventional proportional-navigation acceleration.
+    pn_acceleration = (
+        navigation_constant
+        * closing_speed
+        * np.cross(los_rate, los)
+    )
+
+    # Target acceleration perpendicular to the line of sight.
+    target_acceleration_normal = (
+        target_acceleration
+        - np.dot(target_acceleration, los) * los
+    )
+
+    # Augmentation term.
+    apn_acceleration_command = (
+        pn_acceleration
+        + 0.5 * navigation_constant * target_acceleration_normal
+    )
+
+    return _limit_acceleration(
+        apn_acceleration_command,
+        accel_limit,
+    )

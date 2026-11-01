@@ -40,6 +40,8 @@
   },
   "simulation": {
     "monte_carlo_runs": 20,
+    "monte_carlo_min_runs": 1,
+    "monte_carlo_max_runs": 1000000,
     "max_simultaneous_attackers": 100,
     "max_time_s": 250.0,
     "simulation_speed": 1.0,

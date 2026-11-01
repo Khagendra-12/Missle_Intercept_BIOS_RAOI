@@ -1,1 +1,3 @@
-__version__ = '0.1.0'
+"""EW layered-world simulation backend."""
+
+__version__ = "0.1.0"
