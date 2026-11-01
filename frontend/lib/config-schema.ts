@@ -8,7 +8,7 @@ import type { ConfigValues, ParameterField, RawConfigLike } from './types'
  */
 export const PARAMETER_FIELDS: ParameterField[] = [
   // ── Simulation ───────────────────────────────────────────────
-  { id: 'monteCarloRuns', label: 'Monte Carlo simulations', group: 'simulation', rawPath: ['simulation', 'monte_carlo_runs'], apiKey: 'monteCarloRuns', unit: 'runs', kind: 'int', min: 1, max: 100000, step: 1, slider: true, engine: 'used' },
+  { id: 'monteCarloRuns', label: 'Monte Carlo simulations', group: 'simulation', rawPath: ['simulation', 'monte_carlo_runs'], apiKey: 'monteCarloRuns', unit: 'runs', kind: 'int', min: 1, max: 1000, step: 1, slider: true, engine: 'used' },
   { id: 'attackerCount', label: 'Hostile attackers', group: 'simulation', rawPath: ['simulation', 'attacker_count'], apiKey: 'attackerCount', unit: 'units', kind: 'int', min: 1, max: 500, step: 1, slider: true, engine: 'ignored' },
   { id: 'maxConcurrentAttacks', label: 'Simultaneous launches', group: 'simulation', rawPath: ['simulation', 'max_concurrent_attacks'], apiKey: 'maxConcurrentAttacks', unit: 'units', kind: 'int', min: 1, max: 500, step: 1, slider: true, engine: 'ignored' },
   { id: 'gridSize', label: 'Grid dimension N_a', group: 'simulation', rawPath: ['world', 'na'], apiKey: 'gridSize', unit: 'cells', kind: 'int', min: 10, max: 1000, step: 1, slider: true, engine: 'used' },
@@ -51,7 +51,16 @@ export const PARAMETER_FIELDS: ParameterField[] = [
   { id: 'taylorOrder', label: 'Taylor order K', group: 'advanced', rawPath: ['guidance', 'taylor_order'], unit: '', kind: 'int', min: 1, max: 12, step: 1, slider: true, engine: 'used' },
 ]
 
-export const FIELD_BY_ID = Object.fromEntries(PARAMETER_FIELDS.map((f) => [f.id, f])) as Record<string, ParameterField>
+export const FIELD_BY_ID: Record<string, ParameterField> = (() => {
+  const result: Record<string, ParameterField> = {}
+
+  for (const field of PARAMETER_FIELDS) {
+    if (!field || typeof field.id !== 'string') continue
+    result[field.id] = field
+  }
+
+  return result
+})()
 
 function readPath(obj: unknown, path: string[]): unknown {
   let cur: unknown = obj

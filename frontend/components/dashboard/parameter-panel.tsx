@@ -28,11 +28,6 @@ const GROUPS: { id: ParameterGroup; label: string }[] = [
   { id: 'advanced', label: 'Advanced physics' },
 ]
 
-const FIXED_SINGLE_ATTACKER_FIELDS = new Set([
-  'attackerCount',
-  'maxConcurrentAttacks',
-])
-
 export function ParameterPanel({ sim }: { sim: SimulationController }) {
   const [open, setOpen] = useState<Record<ParameterGroup, boolean>>({
     simulation: true,
@@ -124,8 +119,7 @@ export function ParameterPanel({ sim }: { sim: SimulationController }) {
                 {open[group.id] && (
                   <div className="flex flex-col gap-4 px-4 pb-4 pt-1">
                     {fields.map((field) => {
-                      const fixed =
-                        FIXED_SINGLE_ATTACKER_FIELDS.has(field.id)
+                      const fixed = false
 
                       return (
                         <FieldControl
@@ -144,8 +138,8 @@ export function ParameterPanel({ sim }: { sim: SimulationController }) {
                               : sim.config.data!.defaults[field.id]
                           }
                           error={sim.errors[field.id]}
-                          disabled={running || fixed}
-                          fixed={fixed}
+                          disabled={running}
+                          fixed={false}
                           onChange={(value) => {
                             if (!fixed) sim.setValue(field.id, value)
                           }}
@@ -204,7 +198,7 @@ export function ParameterPanel({ sim }: { sim: SimulationController }) {
         )}
 
         <p className="text-center font-mono text-[10px] text-muted-foreground">
-          Single attacker · Minimum 1 Monte Carlo run
+          Up to 100 hostile attackers · Minimum 1 Monte Carlo run
         </p>
       </div>
     </aside>
@@ -372,6 +366,8 @@ function sliderMax(
   field: ParameterField,
   defaultValue: number | string | undefined,
 ) {
+  if (field.id === 'monteCarloRuns') return 1000
+
   const d = Number(defaultValue)
 
   if (!Number.isFinite(d) || d <= 0) return field.max
