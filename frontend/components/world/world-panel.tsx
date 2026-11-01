@@ -1,16 +1,17 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import useSWR from 'swr'
-import { PlaybackControls } from '@/components/simulation/playback-controls'
 import { usePlayback } from '@/components/simulation/use-playback'
 import type { SimulationController } from '@/components/simulation/use-simulation'
+import { TelemetryPanel } from '@/components/telemetry/telemetry-panel'
 import { HOVER_DEBOUNCE_MS } from '@/lib/config'
 import { formatLayer } from '@/lib/layer-math'
+import { buildLayerStack } from '@/lib/layer-stack'
 import { describeError } from '@/lib/transport'
 import { CellInspector } from './cell-inspector'
 import { LayerNavigator } from './layer-navigator'
-import { WorldCanvas } from './world-canvas'
+import { WorldCanvas, type HoverCell } from './world-canvas'
 
 export function WorldPanel({ sim }: { sim: SimulationController }) {
   const states = sim.trajectory?.states ?? null
@@ -25,16 +26,21 @@ export function WorldPanel({ sim }: { sim: SimulationController }) {
     if (engagementLayer) setLayer(engagementLayer)
   }
 
-  const [hoverCell, setHoverCell] = useState<{ x: number; y: number } | null>(null)
-  const [queryCell, setQueryCell] = useState<{ x: number; y: number } | null>(null)
+  const layers = useMemo(
+    () => buildLayerStack({ active: layer, states, index: playback.index }),
+    [layer, states, playback.index],
+  )
+
+  const [hoverCell, setHoverCell] = useState<HoverCell | null>(null)
+  const [queryCell, setQueryCell] = useState<HoverCell | null>(null)
   useEffect(() => {
     const t = setTimeout(() => setQueryCell(hoverCell), HOVER_DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [hoverCell])
 
   const env = useSWR(
-    queryCell ? ['env', sim.api, layer, queryCell.x, queryCell.y] : null,
-    () => sim.api.getEnvironment(layer, queryCell!.x, queryCell!.y),
+    queryCell ? ['env', sim.api, queryCell.layer, queryCell.x, queryCell.y] : null,
+    () => sim.api.getEnvironment(queryCell!.layer, queryCell!.x, queryCell!.y),
     { revalidateOnFocus: false, keepPreviousData: true, shouldRetryOnError: false },
   )
 
@@ -69,8 +75,11 @@ export function WorldPanel({ sim }: { sim: SimulationController }) {
           states={states}
           index={playback.index}
           detectionRangeKm={sim.detectionRangeKm}
+          layers={layers}
+          activeLayer={layer}
           hoverCell={hoverCell}
           onHoverCell={setHoverCell}
+          onSelectLayer={setLayer}
         />
         {overlay && (
           <div className="pointer-events-none absolute inset-x-0 top-6 flex justify-center px-6">
@@ -79,8 +88,8 @@ export function WorldPanel({ sim }: { sim: SimulationController }) {
         )}
       </div>
 
-      <CellInspector cell={queryCell} layer={layer} env={env.data} loading={env.isLoading || env.isValidating} error={env.error ? describeError(env.error) : null} />
-      <PlaybackControls playback={playback} disabled={!states?.length} />
+      <CellInspector cell={queryCell} layer={queryCell?.layer ?? layer} env={env.data} loading={env.isLoading || env.isValidating} error={env.error ? describeError(env.error) : null} />
+      <TelemetryPanel playback={playback} states={states} interceptionRadiusM={sim.interceptionRadiusM} />
     </section>
   )
 }
